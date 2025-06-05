@@ -1,0 +1,817 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Redis Queue Manager</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+
+        .card {
+            border: 1px solid #ddd;
+            padding: 20px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        .status-section {
+            background-color: #f9f9f9;
+        }
+
+        .edit-section {
+            background-color: #f5f5ff;
+            border-left: 4px solid #2196F3;
+        }
+
+        .group {
+            margin-bottom: 10px;
+            padding: 10px;
+            border: 1px solid #eee;
+            border-radius: 5px;
+        }
+
+        .locked {
+            background-color: #ffeeee;
+        }
+
+        .locked.empty-queue {
+            background-color: #fff0e0; /* Light orange background for locked empty queues */
+        }
+
+        .unlocked {
+            background-color: #eeffee;
+        }
+
+        .processing {
+            border-left: 5px solid #ffbb00; /* Yellow border for groups being processed */
+        }
+
+        input,
+        button {
+            margin: 5px;
+            padding: 8px;
+        }
+
+        button {
+            cursor: pointer;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+        }
+
+        button:hover {
+            background-color: #45a049;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th,
+        td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+
+        th {
+            background-color: #f2f2f2;
+        }
+
+        .stats {
+            font-size: 18px;
+            font-weight: bold;
+            margin-bottom: 15px;
+        }
+
+        .system-status {
+            font-size: 14px;
+            color: #555;
+            font-style: italic;
+            margin-bottom: 10px;
+        }
+        
+        .refresh-indicator {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            background-color: #333;
+            color: white;
+            padding: 5px 10px;
+            border-radius: 15px;
+            font-size: 12px;
+            opacity: 0.7;
+        }
+        
+        .tab-container {
+            display: flex;
+            margin-bottom: 15px;
+        }
+        
+        .tab {
+            padding: 10px 20px;
+            background-color: #ddd;
+            cursor: pointer;
+            border: 1px solid #bbb;
+            border-bottom: none;
+            border-radius: 5px 5px 0 0;
+        }
+        
+        .tab.active {
+            background-color: #f5f5ff;
+            font-weight: bold;
+        }
+        
+        .tab-content {
+            display: none;
+        }
+        
+        .tab-content.active {
+            display: block;
+        }
+        
+        .heading-with-refresh {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .heading-with-refresh h2 {
+            margin: 0;
+        }
+        
+        .refresh-button {
+            font-size: 12px;
+            padding: 5px 10px;
+            background-color: #2196F3;
+        }
+        
+        .auto-refresh-toggle {
+            margin-left: auto;
+            display: flex;
+            align-items: center;
+        }
+        
+        .toggle-switch {
+            position: relative;
+            display: inline-block;
+            width: 50px;
+            height: 24px;
+            margin-left: 10px;
+        }
+        
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #ccc;
+            transition: .4s;
+            border-radius: 24px;
+        }
+        
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 16px;
+            width: 16px;
+            left: 4px;
+            bottom: 4px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+        }
+        
+        input:checked + .slider {
+            background-color: #2196F3;
+        }
+        
+        input:checked + .slider:before {
+            transform: translateX(26px);
+        }
+        
+        .config-display {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+            margin-top: 10px;
+        }
+        
+        .config-item {
+            background-color: #e8f4ff;
+            padding: 10px;
+            border-radius: 4px;
+            text-align: center;
+        }
+        
+        .config-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #0066cc;
+            margin: 5px 0;
+        }
+        
+        .config-label {
+            font-size: 12px;
+            color: #666;
+        }
+        
+        /* Notification styles */
+        .notification {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            padding: 12px 20px;
+            background-color: #323232;
+            color: white;
+            border-radius: 4px;
+            z-index: 1000;
+            opacity: 0;
+            transform: translateY(20px);
+            transition: opacity 0.3s, transform 0.3s;
+            max-width: 300px;
+        }
+        
+        .notification.success {
+            background-color: #43a047;
+        }
+        
+        .notification.error {
+            background-color: #d32f2f;
+        }
+        
+        .notification.show {
+            opacity: 1;
+            transform: translateY(0);
+        }
+        
+        .notification-content {
+            display: flex;
+            align-items: center;
+        }
+        
+        .last-updated {
+            font-size: 12px;
+            color: #666;
+            margin-top: 5px;
+            text-align: right;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Redis Queue Manager</h1>
+    <div class="refresh-indicator" id="refreshIndicator">Auto-refresh active</div>
+    <!-- Notification element -->
+    <div class="notification" id="notification"></div>
+
+    <div class="container">
+        <!-- STATUS SECTION: Automatically updates -->
+        <div class="card status-section">
+            <div class="heading-with-refresh">
+                <h2>Groups Status</h2>
+                <div class="auto-refresh-toggle">
+                    <span>Auto-refresh:</span>
+                    <label class="toggle-switch">
+                        <input type="checkbox" checked id="autoRefreshToggle" onclick="toggleAutoRefresh()">
+                        <span class="slider"></span>
+                    </label>
+                </div>
+            </div>
+            <div class="stats" id="groupStats">Loading...</div>
+            <div class="system-status" id="systemStatus"></div>
+            <table id="groupsTable">
+                <thead>
+                    <tr>
+                        <th>Group ID</th>
+                        <th>Status</th>
+                        <th>Queue Length</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="groupsTableBody"></tbody>
+            </table>
+        </div>
+
+        <!-- STATUS SECTION: Webhooks Display -->
+        <div class="card status-section">
+            <div class="heading-with-refresh">
+                <h2>Current Webhooks</h2>
+                <button class="refresh-button" onclick="fetchStatus()">Refresh Now</button>
+            </div>
+            <div id="webhooksDisplay"></div>
+            <div class="last-updated">Last updated: <span id="lastUpdatedWebhooks">-</span></div>
+        </div>
+    </div>
+
+    <!-- STATUS SECTION: Current Configuration -->
+    <div class="card status-section">
+        <div class="heading-with-refresh">
+            <h2>Current Configuration</h2>
+            <button class="refresh-button" onclick="fetchStatus()">Refresh Now</button>
+        </div>
+        <div class="config-display">
+            <div class="config-item">
+                <div class="config-value" id="displayX">-</div>
+                <div class="config-label">Processing Interval (X seconds)</div>
+            </div>
+            <div class="config-item">
+                <div class="config-value" id="displayY">-</div>
+                <div class="config-label">Lock Timeout (Y minutes)</div>
+            </div>
+            <div class="config-item">
+                <div class="config-value" id="displayZ">-</div>
+                <div class="config-label">Group Processing Delay (Z seconds)</div>
+            </div>
+        </div>
+        <div class="last-updated">Last updated: <span id="lastUpdatedConfig">-</span></div>
+    </div>
+
+    <div class="tab-container">
+        <div class="tab active" onclick="showTab('configTab')">Edit Configuration</div>
+        <div class="tab" onclick="showTab('webhookTab')">Manage Webhooks</div>
+        <div class="tab" onclick="showTab('queueTab')">Test Queue</div>
+    </div>
+
+    <!-- EDIT SECTION: Configuration -->
+    <div id="configTab" class="tab-content active">
+        <div class="card edit-section">
+            <h2>Edit Configuration</h2>
+            <p>Change these values and click "Update Configuration" to save your changes.</p>
+            <div>
+                <label for="configProcessingIntervalSeconds">Processing Interval (X seconds):</label>
+                <input type="number" id="configProcessingIntervalSeconds" min="1">
+
+                <label for="configLockTimeoutMinutes">Lock Timeout (Y minutes):</label>
+                <input type="number" id="configLockTimeoutMinutes" min="1">
+
+                <label for="configGroupProcessingDelaySeconds">Group Processing Delay (Z seconds):</label>
+                <input type="number" id="configGroupProcessingDelaySeconds" min="0">
+
+                <button onclick="updateConfig()">Update Configuration</button>
+                <button onclick="loadConfigValues()">Reset to Current Values</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- EDIT SECTION: Webhooks -->
+    <div id="webhookTab" class="tab-content">
+        <div class="card edit-section">
+            <h2>Manage Webhooks</h2>
+            <div>
+                <input type="text" id="newWebhook" placeholder="https://example.com/webhook">
+                <button onclick="addWebhook()">Add Webhook</button>
+            </div>
+            <h3>Current Webhooks</h3>
+            <div id="webhooksManage"></div>
+        </div>
+    </div>
+
+    <!-- EDIT SECTION: Test Queue -->
+    <div id="queueTab" class="tab-content">
+        <div class="card edit-section">
+            <h2>Test Queue</h2>
+            <div>
+                <input type="text" id="testGroupId" placeholder="Group ID">
+                <input type="text" id="testData" placeholder="Data (JSON)" value="{}">
+                <button onclick="addToQueue()">Add to Queue</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Auto-refresh state
+        let autoRefreshEnabled = true;
+        let refreshInterval;
+        let currentConfig = {};
+        let currentWebhooks = [];
+
+        // Initialize
+        function init() {
+            fetchStatus(); // Initial fetch
+            refreshInterval = setInterval(fetchStatus, 2000);
+        }
+        
+        // Show notification instead of alert
+        function showNotification(message, type = 'success') {
+            const notification = document.getElementById('notification');
+            notification.textContent = message;
+            notification.className = 'notification ' + type;
+            
+            // Add show class to trigger animation
+            setTimeout(() => {
+                notification.classList.add('show');
+            }, 10);
+            
+            // Auto hide after 3 seconds
+            setTimeout(() => {
+                notification.classList.remove('show');
+            }, 3000);
+        }
+        
+        // Format current date and time
+        function formatDateTime() {
+            const now = new Date();
+            return now.toISOString().replace('T', ' ').substring(0, 19);
+        }
+        
+        // Update last updated timestamps
+        function updateTimestamp(elementId) {
+            document.getElementById(elementId).textContent = formatDateTime();
+        }
+
+        // Toggle auto-refresh
+        function toggleAutoRefresh() {
+            autoRefreshEnabled = document.getElementById('autoRefreshToggle').checked;
+            const indicator = document.getElementById('refreshIndicator');
+            
+            if (autoRefreshEnabled) {
+                fetchStatus(); // Fetch immediately
+                refreshInterval = setInterval(fetchStatus, 2000);
+                indicator.textContent = 'Auto-refresh active';
+                showNotification('Auto-refresh enabled');
+            } else {
+                clearInterval(refreshInterval);
+                refreshInterval = null;
+                indicator.textContent = 'Auto-refresh paused';
+                showNotification('Auto-refresh paused', 'error');
+            }
+        }
+
+        // Show tab content
+        function showTab(tabId) {
+            // Hide all tabs
+            document.querySelectorAll('.tab-content').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            
+            // Show selected tab
+            document.getElementById(tabId).classList.add('active');
+            
+            // Update active tab styling
+            document.querySelectorAll('.tab').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            
+            // Find and activate clicked tab
+            const tabs = document.querySelectorAll('.tab');
+            for (let i = 0; i < tabs.length; i++) {
+                if (tabs[i].getAttribute('onclick').includes(tabId)) {
+                    tabs[i].classList.add('active');
+                }
+            }
+            
+            // Load specific data for tabs
+            if (tabId === 'webhookTab') {
+                updateWebhooksManageSection();
+            } else if (tabId === 'configTab') {
+                loadConfigValues();
+            }
+        }
+
+        // Load config values from current state
+        function loadConfigValues() {
+            document.getElementById('configProcessingIntervalSeconds').value = 
+                currentConfig.processingIntervalSeconds || '';
+            document.getElementById('configLockTimeoutMinutes').value = 
+                currentConfig.lockTimeoutMinutes || '';
+            document.getElementById('configGroupProcessingDelaySeconds').value = 
+                currentConfig.groupProcessingDelaySeconds || '';
+        }
+
+        // Update webhooks management section
+        function updateWebhooksManageSection() {
+            const webhooksElem = document.getElementById('webhooksManage');
+            webhooksElem.innerHTML = '';
+            
+            if (currentWebhooks.length > 0) {
+                currentWebhooks.forEach(webhook => {
+                    const webhookElem = document.createElement('div');
+                    webhookElem.className = 'group';
+                    webhookElem.innerHTML = `
+                        ${webhook}
+                        <button onclick="removeWebhook('${webhook}')">Remove</button>
+                    `;
+                    webhooksElem.appendChild(webhookElem);
+                });
+            } else {
+                webhooksElem.innerHTML = '<p>No webhooks configured</p>';
+            }
+        }
+
+        // Fetch status
+        function fetchStatus() {
+            if (!autoRefreshEnabled && !event?.target?.classList?.contains('refresh-button')) {
+                return;
+            }
+            
+            fetch('/api/status')
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! Status: ${response.status}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    // Store current config and webhooks for edit sections
+                    if (data.config) {
+                        currentConfig = data.config;
+                        
+                        // Update configuration display
+                        document.getElementById('displayX').textContent = data.config.processingIntervalSeconds || '-';
+                        document.getElementById('displayY').textContent = data.config.lockTimeoutMinutes || '-';
+                        document.getElementById('displayZ').textContent = data.config.groupProcessingDelaySeconds || '-';
+                        
+                        // Update timestamp
+                        updateTimestamp('lastUpdatedConfig');
+                    }
+                    
+                    if (data.webhooks) {
+                        currentWebhooks = data.webhooks;
+                        // Update webhooks management section if it's visible
+                        if (document.getElementById('webhookTab').classList.contains('active')) {
+                            updateWebhooksManageSection();
+                        }
+                        
+                        // Update timestamp
+                        updateTimestamp('lastUpdatedWebhooks');
+                    }
+                    
+                    // Update group stats with error handling
+                    const statsElem = document.getElementById('groupStats');
+                    if (data && typeof data.lockedGroups !== 'undefined' && typeof data.totalGroups !== 'undefined') {
+                        statsElem.textContent = `${data.lockedGroups} of ${data.totalGroups} groups locked`;
+                    } else {
+                        statsElem.textContent = 'Waiting for data...';
+                    }
+
+                    // Update system status
+                    const systemElem = document.getElementById('systemStatus');
+                    if (data && data.isGlobalProcessing) {
+                        systemElem.textContent = 'Global processing is active';
+                    } else {
+                        systemElem.textContent = 'System idle, waiting for next processing cycle';
+                    }
+
+                    // Update groups table
+                    if (data && data.groups) {
+                        updateGroupsTable(data);
+                    }
+
+                    // Update webhooks display
+                    updateWebhooksDisplay(data);
+                })
+                .catch(error => {
+                    console.error('Error fetching status:', error);
+                    document.getElementById('groupStats').textContent = 'Error connecting to server';
+                    document.getElementById('systemStatus').textContent = 'Connection error';
+                    showNotification('Connection error with server', 'error');
+                });
+        }
+
+        // Update webhooks display section
+        function updateWebhooksDisplay(data) {
+            const webhooksElem = document.getElementById('webhooksDisplay');
+            webhooksElem.innerHTML = '';
+
+            if (data && data.webhooks && data.webhooks.length > 0) {
+                data.webhooks.forEach(webhook => {
+                    const webhookElem = document.createElement('div');
+                    webhookElem.className = 'group';
+                    webhookElem.textContent = webhook;
+                    webhooksElem.appendChild(webhookElem);
+                });
+            } else {
+                webhooksElem.innerHTML = '<p>No webhooks configured</p>';
+            }
+        }
+
+        // Add to queue
+        function addToQueue() {
+            const groupId = document.getElementById('testGroupId').value;
+            const dataStr = document.getElementById('testData').value;
+            let data;
+
+            try {
+                data = JSON.parse(dataStr);
+            } catch (error) {
+                showNotification('Invalid JSON data', 'error');
+                return;
+            }
+
+            if (!groupId) {
+                showNotification('Group ID is required', 'error');
+                return;
+            }
+
+            fetch('/queue', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    globalThreadIdDestination: groupId,
+                    data
+                })
+            })
+                .then(response => response.json())
+                .then(data => {
+                    showNotification('Added to queue: ' + data.message);
+                    fetchStatus();
+                })
+                .catch(error => {
+                    console.error('Error adding to queue:', error);
+                    showNotification('Error adding to queue', 'error');
+                });
+        }
+
+        // Unlock group function in frontend
+        function unlockGroup(groupId) {
+            fetch(`/api/unlock/${groupId}`, {
+                method: 'POST'
+            })
+                .then(response => response.json())
+                .then(data => {
+                    showNotification(data.message);
+                    fetchStatus();
+                })
+                .catch(error => {
+                    console.error('Error unlocking group:', error);
+                    showNotification('Error unlocking group', 'error');
+                });
+        }
+
+        // Add webhook
+        function addWebhook() {
+            const webhook = document.getElementById('newWebhook').value;
+
+            if (!webhook) {
+                showNotification('Webhook URL is required', 'error');
+                return;
+            }
+
+            fetch('/api/webhooks', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    action: 'add',
+                    webhook
+                })
+            })
+                .then(response => response.json())
+                .then(data => {
+                    showNotification(data.message);
+                    document.getElementById('newWebhook').value = '';
+                    fetchStatus();
+                })
+                .catch(error => {
+                    console.error('Error adding webhook:', error);
+                    showNotification('Error adding webhook', 'error');
+                });
+        }
+
+        // Remove webhook
+        function removeWebhook(webhook) {
+            fetch('/api/webhooks', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    action: 'remove',
+                    webhook
+                })
+            })
+                .then(response => response.json())
+                .then(data => {
+                    showNotification(data.message);
+                    fetchStatus();
+                })
+                .catch(error => {
+                    console.error('Error removing webhook:', error);
+                    showNotification('Error removing webhook', 'error');
+                });
+        }
+
+        // Update config
+        function updateConfig() {
+            const processingIntervalSeconds = document.getElementById('configProcessingIntervalSeconds').value;
+            const lockTimeoutMinutes = document.getElementById('configLockTimeoutMinutes').value;
+            const groupProcessingDelaySeconds = document.getElementById('configGroupProcessingDelaySeconds').value;
+
+            fetch('/api/config', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    processingIntervalSeconds,
+                    lockTimeoutMinutes,
+                    groupProcessingDelaySeconds
+                })
+            })
+                .then(response => response.json())
+                .then(data => {
+                    showNotification('Configuration updated');
+                    fetchStatus();
+                })
+                .catch(error => {
+                    console.error('Error updating config:', error);
+                    showNotification('Error updating configuration', 'error');
+                });
+        }
+
+        // Update the table display to show more information
+        function updateGroupsTable(data) {
+            const tableBody = document.getElementById('groupsTableBody');
+            tableBody.innerHTML = '';
+
+            const groups = Object.keys(data.groups);
+            if (groups.length === 0) {
+                const row = document.createElement('tr');
+                row.innerHTML = '<td colspan="4">No groups found. Try adding an item to the queue.</td>';
+                tableBody.appendChild(row);
+            } else {
+                groups.forEach(groupId => {
+                    const group = data.groups[groupId];
+                    
+                    // Determine row class based on multiple conditions
+                    let rowClass = '';
+                    
+                    // First, locked or unlocked
+                    if (group.locked) {
+                        rowClass = group.queueLength === 0 ? 'locked empty-queue' : 'locked';
+                    } else {
+                        rowClass = 'unlocked';
+                    }
+                    
+                    // Add processing class if being processed
+                    if (group.processing || data.processingGroups?.includes(groupId)) {
+                        rowClass += ' processing';
+                    }
+                    
+                    const row = document.createElement('tr');
+                    row.className = rowClass;
+
+                    // Show detailed status information
+                    let statusText = group.locked ? 'Locked' : 'Unlocked';
+                    
+                    // Add details based on queue state and processing state
+                    if (group.locked && group.queueLength > 0) {
+                        statusText += ` (Processing 1 of ${group.queueLength})`;
+                    } else if (group.locked && group.queueLength === 0) {
+                        statusText += ' (Empty queue, waiting for unlock)';
+                    } else if (!group.locked && group.queueLength > 0) {
+                        statusText += ` (Ready to process next item)`;
+                    }
+                    
+                    // Add processing indicator
+                    if (group.processing || data.processingGroups?.includes(groupId)) {
+                        statusText += ' [Currently processing]';
+                    }
+
+                    row.innerHTML = `
+                        <td>${groupId}</td>
+                        <td>${statusText}</td>
+                        <td>${group.queueLength}</td>
+                        <td>
+                            ${group.locked ? `<button onclick="unlockGroup('${groupId}')">Unlock</button>` : ''}
+                        </td>
+                    `;
+
+                    tableBody.appendChild(row);
+                });
+            }
+        }
+
+        // Initialize
+        init();
+    </script>
+</body>
+
+</html>
