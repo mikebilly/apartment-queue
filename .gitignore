@@ -29,3 +29,5 @@ coverage/
 
 # Lock files (optional depending on your preference)
 package-lock.json
+
+.env
