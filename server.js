@@ -127,6 +127,86 @@ server.get('/', (request, reply) => {
   reply.sendFile('index.html');
 });
 
+// Check if system is manually paused
+async function isManuallyPaused() {
+  try {
+    const manualPause = await safeRedisOperation(
+      redisClient.get.bind(redisClient),
+      'manual_pause',
+      'string',
+      'false'
+    );
+    return manualPause === 'true';
+  } catch (error) {
+    server.log.error(`Error checking manual pause status: ${error.message}`);
+    return false; // Default to not paused in case of error
+  }
+}
+
+// Rename the original isCurrentlyPaused to isScheduledPaused for clarity
+async function isScheduledPaused() {
+  try {
+    // Get Vietnam time
+    const vietnamTime = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Ho_Chi_Minh' }));
+    const currentHours = vietnamTime.getHours();
+    const currentMinutes = vietnamTime.getMinutes();
+    
+    // Convert current time to minutes since midnight for easier comparison
+    const currentTimeInMinutes = currentHours * 60 + currentMinutes;
+    
+    // Get all pause times
+    const pauseTimes = await safeRedisOperation(
+      redisClient.lRange.bind(redisClient),
+      'pause_times',
+      'list',
+      [],
+      0,
+      -1
+    );
+    
+    // Check if current time falls within any pause period
+    for (const pauseTimeStr of pauseTimes) {
+      const pauseTime = JSON.parse(pauseTimeStr);
+      
+      // Parse start and end times (format: "HH:MM")
+      const startParts = pauseTime.startTime.split(':').map(Number);
+      const endParts = pauseTime.endTime.split(':').map(Number);
+      
+      const startTimeInMinutes = startParts[0] * 60 + startParts[1];
+      const endTimeInMinutes = endParts[0] * 60 + endParts[1];
+      
+      // Handle cases where the pause period spans midnight
+      if (startTimeInMinutes <= endTimeInMinutes) {
+        // Normal case (e.g., 13:00-15:00)
+        if (currentTimeInMinutes >= startTimeInMinutes && currentTimeInMinutes <= endTimeInMinutes) {
+          return true;
+        }
+      } else {
+        // Spans midnight case (e.g., 22:00-01:00)
+        if (currentTimeInMinutes >= startTimeInMinutes || currentTimeInMinutes <= endTimeInMinutes) {
+          return true;
+        }
+      }
+    }
+    
+    return false;
+  } catch (error) {
+    server.log.error(`Error checking scheduled pause status: ${error.message}`);
+    return false; // Default to not paused in case of error
+  }
+}
+
+// Update the isCurrentlyPaused function to also check manual pause
+async function isCurrentlyPaused() {
+  try {
+    // Check manual pause first, then scheduled pause if needed
+    return await isManuallyPaused() || await isScheduledPaused();
+  } catch (error) {
+    server.log.error(`Error checking pause status: ${error.message}`);
+    return false; // Default to not paused in case of error
+  }
+}
+
 // Queue endpoint
 server.post('/queue', async (request, reply) => {
   try {
@@ -166,7 +246,7 @@ server.post('/api/unlock/:globalThreadIdDestination', async (request, reply) => 
   }
 });
 
-// API to get status
+// Update the /api/status endpoint to include manual pause information
 server.get('/api/status', async (request, reply) => {
   try {
     // Check if Redis is connected
@@ -260,8 +340,10 @@ server.get('/api/status', async (request, reply) => {
     // Parse pause times
     const parsedPauseTimes = pauseTimes.map(item => JSON.parse(item));
 
-    // Check if currently paused
-    const isPaused = await isCurrentlyPaused();
+    // Check pause states
+    const isScheduledPause = await isScheduledPaused();
+    const isManualPause = await isManuallyPaused();
+    const isPaused = isScheduledPause || isManualPause;
 
     return {
       totalGroups: allGroupIds.length,
@@ -272,7 +354,9 @@ server.get('/api/status', async (request, reply) => {
       webhooks,
       config,
       pauseTimes: parsedPauseTimes,
-      isPaused
+      isPaused,
+      isManualPause,
+      isScheduledPause
     };
   } catch (error) {
     server.log.error(`Error in /api/status: ${error.message}`);
@@ -283,7 +367,7 @@ server.get('/api/status', async (request, reply) => {
   }
 });
 
-// Helper function to validate and fix Redis data types
+// Update the validateAndFixRedisDataTypes function to include manual_pause
 async function validateAndFixRedisDataTypes() {
   try {
     // Check 'config' - should be a HASH
@@ -318,6 +402,17 @@ async function validateAndFixRedisDataTypes() {
       server.log.warn("'pause_times' key has incorrect type, resetting it");
       await redisClient.del('pause_times');
       // No default pause times
+    }
+    
+    // Check 'manual_pause' - should be a STRING
+    const manualPauseType = await redisClient.type('manual_pause');
+    if (manualPauseType !== 'string' && manualPauseType !== 'none') {
+      server.log.warn("'manual_pause' key has incorrect type, resetting it");
+      await redisClient.del('manual_pause');
+      await redisClient.set('manual_pause', 'false');
+    } else if (manualPauseType === 'none') {
+      // Create if not exists, default to not paused
+      await redisClient.set('manual_pause', 'false');
     }
 
     // Check all queue keys - should be LISTs
@@ -564,58 +659,54 @@ server.get('/api/pause-times', async (request, reply) => {
   }
 });
 
-// Function to check if current time is within a pause period
-async function isCurrentlyPaused() {
+// Add the manual pause endpoint
+server.post('/api/manual-pause', async (request, reply) => {
   try {
-    // Get Vietnam time
-    const vietnamTime = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Ho_Chi_Minh' }));
-    const currentHours = vietnamTime.getHours();
-    const currentMinutes = vietnamTime.getMinutes();
+    const { pause } = request.body;
     
-    // Convert current time to minutes since midnight for easier comparison
-    const currentTimeInMinutes = currentHours * 60 + currentMinutes;
-    
-    // Get all pause times
-    const pauseTimes = await safeRedisOperation(
-      redisClient.lRange.bind(redisClient),
-      'pause_times',
-      'list',
-      [],
-      0,
-      -1
-    );
-    
-    // Check if current time falls within any pause period
-    for (const pauseTimeStr of pauseTimes) {
-      const pauseTime = JSON.parse(pauseTimeStr);
-      
-      // Parse start and end times (format: "HH:MM")
-      const startParts = pauseTime.startTime.split(':').map(Number);
-      const endParts = pauseTime.endTime.split(':').map(Number);
-      
-      const startTimeInMinutes = startParts[0] * 60 + startParts[1];
-      const endTimeInMinutes = endParts[0] * 60 + endParts[1];
-      
-      // Handle cases where the pause period spans midnight
-      if (startTimeInMinutes <= endTimeInMinutes) {
-        // Normal case (e.g., 13:00-15:00)
-        if (currentTimeInMinutes >= startTimeInMinutes && currentTimeInMinutes <= endTimeInMinutes) {
-          return true;
-        }
-      } else {
-        // Spans midnight case (e.g., 22:00-01:00)
-        if (currentTimeInMinutes >= startTimeInMinutes || currentTimeInMinutes <= endTimeInMinutes) {
-          return true;
-        }
-      }
+    if (pause === undefined) {
+      return reply.code(400).send({ error: 'The pause parameter is required (true or false)' });
     }
     
-    return false;
+    const pauseValue = pause === true || pause === 'true' ? 'true' : 'false';
+    
+    // Store the manual pause state in Redis
+    await safeRedisOperation(
+      redisClient.set.bind(redisClient),
+      'manual_pause',
+      'string',
+      pauseValue,
+      pauseValue
+    );
+    
+    const status = pauseValue === 'true' ? 'paused' : 'unpaused';
+    server.log.info(`System manually ${status}`);
+    
+    return { 
+      success: true, 
+      message: `System has been manually ${status}`,
+      paused: pauseValue === 'true'
+    };
   } catch (error) {
-    server.log.error(`Error checking pause status: ${error.message}`);
-    return false; // Default to not paused in case of error
+    server.log.error(`Error in /api/manual-pause: ${error.message}`);
+    return reply.code(500).send({ error: 'Internal Server Error', message: error.message });
   }
-}
+});
+
+// Add a GET endpoint to check the manual pause status
+server.get('/api/manual-pause', async (request, reply) => {
+  try {
+    const manuallyPaused = await isManuallyPaused();
+    
+    return {
+      success: true,
+      paused: manuallyPaused
+    };
+  } catch (error) {
+    server.log.error(`Error in GET /api/manual-pause: ${error.message}`);
+    return reply.code(500).send({ error: 'Internal Server Error', message: error.message });
+  }
+});
 
 // Attempt to acquire a lock with a given key and timeout
 async function acquireLock(lockKey, timeoutSeconds) {
@@ -638,8 +729,11 @@ async function releaseLock(lockKey) {
 async function processGroup(globalThreadIdDestination) {
   // Check if we're in a pause period
   const isPaused = await isCurrentlyPaused();
+  const isManualPause = await isManuallyPaused();
+  
   if (isPaused) {
-    server.log.info('Processing paused due to scheduled pause time, skipping group processing');
+    const pauseReason = isManualPause ? 'manual pause' : 'scheduled pause time';
+    server.log.info(`Processing paused due to ${pauseReason}, skipping group processing`);
     return;
   }
 
@@ -758,8 +852,12 @@ async function processGroup(globalThreadIdDestination) {
 async function processAllGroups() {
   // Check if we're in a pause period
   const isPaused = await isCurrentlyPaused();
+  const isManualPause = await isManuallyPaused();
+  const isScheduledPause = await isScheduledPaused();
+  
   if (isPaused) {
-    server.log.info('Processing paused due to scheduled pause time, skipping all group processing');
+    const pauseReason = isManualPause ? 'manual pause' : 'scheduled pause time';
+    server.log.info(`Processing paused due to ${pauseReason}, skipping all group processing`);
     return;
   }
 

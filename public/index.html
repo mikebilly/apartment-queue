@@ -362,6 +362,44 @@
         .edit-form-container.show {
             display: block;
         }
+        
+        /* Manual pause toggle styles */
+        .manual-pause-container {
+            margin: 15px 0;
+            padding: 15px;
+            background-color: #fff8e1;
+            border-radius: 4px;
+            border-left: 4px solid #ffc107;
+        }
+        
+        .manual-pause-toggle {
+            display: flex;
+            align-items: center;
+            margin-top: 10px;
+        }
+        
+        .manual-pause-toggle label {
+            margin-right: 10px;
+            font-weight: bold;
+        }
+        
+        .pause-reason {
+            font-style: italic;
+            margin-left: 10px;
+            padding: 3px 8px;
+            border-radius: 3px;
+            font-size: 12px;
+        }
+        
+        .pause-reason.manual {
+            background-color: #ffcdd2;
+            color: #b71c1c;
+        }
+        
+        .pause-reason.scheduled {
+            background-color: #bbdefb;
+            color: #0d47a1;
+        }
     </style>
 </head>
 
@@ -443,6 +481,22 @@
         <div id="pauseStatusDisplay">
             <div class="pause-status">Checking pause status...</div>
         </div>
+        
+        <!-- Manual Pause Toggle Section -->
+        <div class="manual-pause-container">
+            <h3>Manual Processing Control</h3>
+            <p>Override automatic scheduling to manually pause or resume processing.</p>
+            <div class="manual-pause-toggle">
+                <label for="manualPauseToggle">Manually pause processing:</label>
+                <label class="toggle-switch">
+                    <input type="checkbox" id="manualPauseToggle" onchange="toggleManualPause(this.checked)">
+                    <span class="slider"></span>
+                </label>
+                <span id="manualPauseStatus" class="pause-reason">Checking status...</span>
+            </div>
+        </div>
+        
+        <h3>Scheduled Pause Times</h3>
         <div id="currentPauseTimesDisplay"></div>
         <div class="last-updated">Last updated: <span id="lastUpdatedPauseStatus">-</span></div>
     </div>
@@ -553,11 +607,14 @@
         let currentConfig = {};
         let currentWebhooks = [];
         let currentPauseTimes = [];
+        let isManualPause = false;
+        let isScheduledPause = false;
 
         // Initialize
         function init() {
             fetchStatus(); // Initial fetch
             fetchPauseTimes(); // Initial fetch of pause times
+            fetchManualPauseStatus(); // Initial fetch of manual pause status
             updateVietnamTime(); // Initial update of Vietnam time
             refreshInterval = setInterval(fetchStatus, 2000);
             setInterval(updateVietnamTime, 1000); // Update Vietnam time every second
@@ -736,7 +793,10 @@
                     
                     // Update pause status if available
                     if (data.hasOwnProperty('isPaused')) {
-                        updatePauseStatusDisplay(data.isPaused);
+                        isManualPause = data.isManualPause || false;
+                        isScheduledPause = data.isScheduledPause || false;
+                        updatePauseStatusDisplay(data.isPaused, isManualPause, isScheduledPause);
+                        updateManualPauseToggle(isManualPause);
                     }
                     
                     // Update group stats with error handling
@@ -800,13 +860,75 @@
                 .then(data => {
                     currentPauseTimes = data.pauseTimes;
                     updatePauseTimesDisplay();
-                    updatePauseStatusDisplay(data.isPaused);
                     updateTimestamp('lastUpdatedPauseStatus');
                 })
                 .catch(error => {
                     console.error('Error fetching pause times:', error);
                     showNotification('Error fetching pause times', 'error');
                 });
+        }
+        
+        // Fetch manual pause status
+        function fetchManualPauseStatus() {
+            fetch('/api/manual-pause')
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! Status: ${response.status}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    isManualPause = data.paused;
+                    updateManualPauseToggle(isManualPause);
+                })
+                .catch(error => {
+                    console.error('Error fetching manual pause status:', error);
+                    showNotification('Error fetching manual pause status', 'error');
+                });
+        }
+        
+        // Toggle manual pause
+        function toggleManualPause(isPaused) {
+            fetch('/api/manual-pause', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    pause: isPaused
+                })
+            })
+                .then(response => response.json())
+                .then(data => {
+                    isManualPause = data.paused;
+                    showNotification(data.message);
+                    // Update UI
+                    updateManualPauseToggle(isManualPause);
+                    // Refresh status to update all related displays
+                    fetchStatus();
+                })
+                .catch(error => {
+                    console.error('Error toggling manual pause:', error);
+                    showNotification('Error toggling manual pause', 'error');
+                    // Reset the toggle to match the actual state
+                    document.getElementById('manualPauseToggle').checked = isManualPause;
+                });
+        }
+        
+        // Update manual pause toggle UI
+        function updateManualPauseToggle(isPaused) {
+            const toggle = document.getElementById('manualPauseToggle');
+            const statusElem = document.getElementById('manualPauseStatus');
+            
+            toggle.checked = isPaused;
+            
+            if (isPaused) {
+                statusElem.textContent = 'MANUAL PAUSE ACTIVE';
+                statusElem.className = 'pause-reason manual';
+            } else {
+                statusElem.textContent = 'Manual pause inactive';
+                statusElem.className = 'pause-reason';
+            }
         }
 
         // Update pause times display
@@ -868,15 +990,27 @@
             }
         }
 
-        // Update pause status display
-        function updatePauseStatusDisplay(isPaused) {
+        // Update pause status display with reason
+        function updatePauseStatusDisplay(isPaused, isManualPause, isScheduledPause) {
             const pauseStatusElem = document.getElementById('pauseStatusDisplay');
             
             if (isPaused) {
+                let reason = '';
+                let reasonClass = '';
+                
+                if (isManualPause && isScheduledPause) {
+                    reason = '<span class="pause-reason manual">MANUAL PAUSE</span> and <span class="pause-reason scheduled">SCHEDULED PAUSE</span>';
+                } else if (isManualPause) {
+                    reason = '<span class="pause-reason manual">MANUAL PAUSE</span>';
+                } else if (isScheduledPause) {
+                    reason = '<span class="pause-reason scheduled">SCHEDULED PAUSE</span>';
+                }
+                
                 pauseStatusElem.innerHTML = `
                     <div class="pause-status active">
                         PROCESSING PAUSED - Accepting new queue items, but not processing or sending webhooks
                     </div>
+                    <div>Reason: ${reason}</div>
                 `;
             } else {
                 pauseStatusElem.innerHTML = `
