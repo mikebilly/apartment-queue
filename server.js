@@ -247,6 +247,22 @@ server.get('/api/status', async (request, reply) => {
       groupProcessingDelaySeconds: parseInt(configHash.groupProcessingDelaySeconds || groupProcessingDelaySeconds)
     };
 
+    // Get pause times
+    const pauseTimes = await safeRedisOperation(
+      redisClient.lRange.bind(redisClient),
+      'pause_times',
+      'list',
+      [],
+      0,
+      -1
+    );
+
+    // Parse pause times
+    const parsedPauseTimes = pauseTimes.map(item => JSON.parse(item));
+
+    // Check if currently paused
+    const isPaused = await isCurrentlyPaused();
+
     return {
       totalGroups: allGroupIds.length,
       lockedGroups,
@@ -254,7 +270,9 @@ server.get('/api/status', async (request, reply) => {
       processingGroups,
       groups: status,
       webhooks,
-      config
+      config,
+      pauseTimes: parsedPauseTimes,
+      isPaused
     };
   } catch (error) {
     server.log.error(`Error in /api/status: ${error.message}`);
@@ -292,6 +310,14 @@ async function validateAndFixRedisDataTypes() {
     } else if (webhooksType === 'none') {
       // Create if not exists
       await redisClient.sAdd('webhooks', 'http://localhost:3001/webhook');
+    }
+
+    // Check 'pause_times' - should be a LIST
+    const pauseTimesType = await redisClient.type('pause_times');
+    if (pauseTimesType !== 'list' && pauseTimesType !== 'none') {
+      server.log.warn("'pause_times' key has incorrect type, resetting it");
+      await redisClient.del('pause_times');
+      // No default pause times
     }
 
     // Check all queue keys - should be LISTs
@@ -402,6 +428,195 @@ server.post('/api/config', async (request, reply) => {
   }
 });
 
+// API to manage pause times
+server.post('/api/pause-times', async (request, reply) => {
+  try {
+    const { action, id, startTime, endTime } = request.body;
+
+    // Validate time format for add and edit actions
+    if ((action === 'add' || action === 'edit') && (!startTime || !endTime)) {
+      return reply.code(400).send({ error: 'Both startTime and endTime are required' });
+    }
+
+    if (action === 'add') {
+      // Add a new pause time
+      const pauseTime = {
+        id: Date.now().toString(), // Use timestamp as ID
+        startTime,
+        endTime
+      };
+
+      await safeRedisOperation(
+        redisClient.rPush.bind(redisClient),
+        'pause_times',
+        'list',
+        [],
+        JSON.stringify(pauseTime)
+      );
+
+      return { success: true, message: 'Pause time added', pauseTime };
+    } 
+    else if (action === 'remove') {
+      // Remove a pause time
+      if (!id) {
+        return reply.code(400).send({ error: 'ID is required for removing pause time' });
+      }
+
+      // Get all pause times
+      const pauseTimes = await safeRedisOperation(
+        redisClient.lRange.bind(redisClient),
+        'pause_times',
+        'list',
+        [],
+        0,
+        -1
+      );
+
+      // Filter out the one to remove
+      const filteredPauseTimes = pauseTimes.filter(item => {
+        const parsed = JSON.parse(item);
+        return parsed.id !== id;
+      });
+
+      // Delete and recreate the list
+      await redisClient.del('pause_times');
+      
+      if (filteredPauseTimes.length > 0) {
+        await redisClient.rPush('pause_times', ...filteredPauseTimes);
+      }
+
+      return { success: true, message: 'Pause time removed' };
+    } 
+    else if (action === 'edit') {
+      // Edit an existing pause time
+      if (!id) {
+        return reply.code(400).send({ error: 'ID is required for editing pause time' });
+      }
+
+      // Get all pause times
+      const pauseTimes = await safeRedisOperation(
+        redisClient.lRange.bind(redisClient),
+        'pause_times',
+        'list',
+        [],
+        0,
+        -1
+      );
+
+      // Update the specified one
+      const updatedPauseTimes = pauseTimes.map(item => {
+        const parsed = JSON.parse(item);
+        if (parsed.id === id) {
+          return JSON.stringify({
+            ...parsed,
+            startTime,
+            endTime
+          });
+        }
+        return item;
+      });
+
+      // Delete and recreate the list
+      await redisClient.del('pause_times');
+      
+      if (updatedPauseTimes.length > 0) {
+        await redisClient.rPush('pause_times', ...updatedPauseTimes);
+      }
+
+      return { success: true, message: 'Pause time updated' };
+    } 
+    else {
+      return reply.code(400).send({ error: 'Invalid action. Use "add", "remove", or "edit"' });
+    }
+  } catch (error) {
+    server.log.error(`Error in /api/pause-times: ${error.message}`);
+    return reply.code(500).send({ error: 'Internal Server Error', message: error.message });
+  }
+});
+
+// API to get pause times
+server.get('/api/pause-times', async (request, reply) => {
+  try {
+    // Get all pause times
+    const pauseTimes = await safeRedisOperation(
+      redisClient.lRange.bind(redisClient),
+      'pause_times',
+      'list',
+      [],
+      0,
+      -1
+    );
+
+    // Parse JSON strings
+    const parsedPauseTimes = pauseTimes.map(item => JSON.parse(item));
+
+    // Check if currently paused
+    const isPaused = await isCurrentlyPaused();
+
+    return { 
+      success: true, 
+      pauseTimes: parsedPauseTimes,
+      isPaused
+    };
+  } catch (error) {
+    server.log.error(`Error in GET /api/pause-times: ${error.message}`);
+    return reply.code(500).send({ error: 'Internal Server Error', message: error.message });
+  }
+});
+
+// Function to check if current time is within a pause period
+async function isCurrentlyPaused() {
+  try {
+    // Get Vietnam time
+    const vietnamTime = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Ho_Chi_Minh' }));
+    const currentHours = vietnamTime.getHours();
+    const currentMinutes = vietnamTime.getMinutes();
+    
+    // Convert current time to minutes since midnight for easier comparison
+    const currentTimeInMinutes = currentHours * 60 + currentMinutes;
+    
+    // Get all pause times
+    const pauseTimes = await safeRedisOperation(
+      redisClient.lRange.bind(redisClient),
+      'pause_times',
+      'list',
+      [],
+      0,
+      -1
+    );
+    
+    // Check if current time falls within any pause period
+    for (const pauseTimeStr of pauseTimes) {
+      const pauseTime = JSON.parse(pauseTimeStr);
+      
+      // Parse start and end times (format: "HH:MM")
+      const startParts = pauseTime.startTime.split(':').map(Number);
+      const endParts = pauseTime.endTime.split(':').map(Number);
+      
+      const startTimeInMinutes = startParts[0] * 60 + startParts[1];
+      const endTimeInMinutes = endParts[0] * 60 + endParts[1];
+      
+      // Handle cases where the pause period spans midnight
+      if (startTimeInMinutes <= endTimeInMinutes) {
+        // Normal case (e.g., 13:00-15:00)
+        if (currentTimeInMinutes >= startTimeInMinutes && currentTimeInMinutes <= endTimeInMinutes) {
+          return true;
+        }
+      } else {
+        // Spans midnight case (e.g., 22:00-01:00)
+        if (currentTimeInMinutes >= startTimeInMinutes || currentTimeInMinutes <= endTimeInMinutes) {
+          return true;
+        }
+      }
+    }
+    
+    return false;
+  } catch (error) {
+    server.log.error(`Error checking pause status: ${error.message}`);
+    return false; // Default to not paused in case of error
+  }
+}
+
 // Attempt to acquire a lock with a given key and timeout
 async function acquireLock(lockKey, timeoutSeconds) {
   // Use SET NX (Not eXists) to ensure atomic lock acquisition
@@ -421,6 +636,13 @@ async function releaseLock(lockKey) {
 
 // Process a group - ONE ITEM AT A TIME
 async function processGroup(globalThreadIdDestination) {
+  // Check if we're in a pause period
+  const isPaused = await isCurrentlyPaused();
+  if (isPaused) {
+    server.log.info('Processing paused due to scheduled pause time, skipping group processing');
+    return;
+  }
+
   // Try to acquire processing lock for this specific group
   const processingLockKey = `processing:${globalThreadIdDestination}`;
   const lockAcquired = await acquireLock(processingLockKey, 60); // 60 seconds timeout for processing
@@ -477,6 +699,13 @@ async function processGroup(globalThreadIdDestination) {
     try {
       const item = JSON.parse(itemStr);
 
+      // Double check we're not paused (in case time changed during processing)
+      const stillPaused = await isCurrentlyPaused();
+      if (stillPaused) {
+        server.log.info('Processing paused due to scheduled pause time, skipping webhook calls');
+        return;
+      }
+
       // Get all webhooks
       const webhooks = await safeRedisOperation(
         redisClient.sMembers.bind(redisClient),
@@ -527,6 +756,13 @@ async function processGroup(globalThreadIdDestination) {
 
 // Process all groups
 async function processAllGroups() {
+  // Check if we're in a pause period
+  const isPaused = await isCurrentlyPaused();
+  if (isPaused) {
+    server.log.info('Processing paused due to scheduled pause time, skipping all group processing');
+    return;
+  }
+
   // Try to acquire global processing lock
   const globalProcessingLockKey = 'processing:all';
   const lockAcquired = await acquireLock(globalProcessingLockKey, 300); // 5 minutes timeout
@@ -547,6 +783,13 @@ async function processAllGroups() {
 
     // Process each group with delay between them
     for (const group of groups) {
+      // Check again if we've entered a pause period during processing
+      const nowPaused = await isCurrentlyPaused();
+      if (nowPaused) {
+        server.log.info('Entered scheduled pause time, stopping group processing');
+        break;
+      }
+
       await processGroup(group);
 
       // Add delay between processing groups

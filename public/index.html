@@ -279,6 +279,89 @@
             margin-top: 5px;
             text-align: right;
         }
+        
+        /* Pause times styles */
+        .pause-times-container {
+            margin-top: 20px;
+        }
+        
+        .pause-time-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px;
+            margin-bottom: 8px;
+            background-color: #f0f8ff;
+            border-radius: 4px;
+            border-left: 4px solid #5c6bc0;
+        }
+        
+        .pause-time-actions {
+            display: flex;
+        }
+        
+        .edit-btn {
+            background-color: #ff9800;
+        }
+        
+        .remove-btn {
+            background-color: #f44336;
+        }
+        
+        .pause-time-form {
+            display: grid;
+            grid-template-columns: 1fr 1fr auto;
+            gap: 10px;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        
+        .time-input-group {
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .time-input-group label {
+            font-size: 12px;
+            margin-bottom: 5px;
+        }
+        
+        .pause-status {
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-weight: bold;
+            display: inline-block;
+            margin: 10px 0;
+        }
+        
+        .pause-status.active {
+            background-color: #f44336;
+            color: white;
+        }
+        
+        .pause-status.inactive {
+            background-color: #4caf50;
+            color: white;
+        }
+        
+        .vietnam-time {
+            font-style: italic;
+            color: #666;
+            font-size: 14px;
+            margin-bottom: 10px;
+        }
+        
+        .edit-form-container {
+            display: none;
+            padding: 15px;
+            background-color: #e8eaf6;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+        
+        .edit-form-container.show {
+            display: block;
+        }
     </style>
 </head>
 
@@ -350,9 +433,24 @@
         <div class="last-updated">Last updated: <span id="lastUpdatedConfig">-</span></div>
     </div>
 
+    <!-- PAUSE TIMES STATUS SECTION -->
+    <div class="card status-section">
+        <div class="heading-with-refresh">
+            <h2>Processing Pause Status</h2>
+            <button class="refresh-button" onclick="fetchPauseTimes()">Refresh Now</button>
+        </div>
+        <div class="vietnam-time">Vietnam time: <span id="vietnamTimeDisplay">-</span></div>
+        <div id="pauseStatusDisplay">
+            <div class="pause-status">Checking pause status...</div>
+        </div>
+        <div id="currentPauseTimesDisplay"></div>
+        <div class="last-updated">Last updated: <span id="lastUpdatedPauseStatus">-</span></div>
+    </div>
+
     <div class="tab-container">
         <div class="tab active" onclick="showTab('configTab')">Edit Configuration</div>
         <div class="tab" onclick="showTab('webhookTab')">Manage Webhooks</div>
+        <div class="tab" onclick="showTab('pauseTimesTab')">Manage Pause Times</div>
         <div class="tab" onclick="showTab('queueTab')">Test Queue</div>
     </div>
 
@@ -390,6 +488,52 @@
         </div>
     </div>
 
+    <!-- EDIT SECTION: Pause Times -->
+    <div id="pauseTimesTab" class="tab-content">
+        <div class="card edit-section">
+            <h2>Manage Pause Times</h2>
+            <p>Add time periods when the server should not process items (Vietnam time zone, 24-hour format).</p>
+            
+            <div class="pause-time-form">
+                <div class="time-input-group">
+                    <label for="startTime">Start Time (HH:MM)</label>
+                    <input type="time" id="startTime" required>
+                </div>
+                <div class="time-input-group">
+                    <label for="endTime">End Time (HH:MM)</label>
+                    <input type="time" id="endTime" required>
+                </div>
+                <div>
+                    <button onclick="addPauseTime()">Add Pause Time</button>
+                </div>
+            </div>
+            
+            <div id="editPauseTimeForm" class="edit-form-container">
+                <h3>Edit Pause Time</h3>
+                <div class="pause-time-form">
+                    <div class="time-input-group">
+                        <label for="editStartTime">Start Time (HH:MM)</label>
+                        <input type="time" id="editStartTime" required>
+                    </div>
+                    <div class="time-input-group">
+                        <label for="editEndTime">End Time (HH:MM)</label>
+                        <input type="time" id="editEndTime" required>
+                    </div>
+                    <div>
+                        <input type="hidden" id="editPauseTimeId">
+                        <button onclick="savePauseTimeEdit()">Save Changes</button>
+                        <button onclick="cancelEdit()" style="background-color: #777;">Cancel</button>
+                    </div>
+                </div>
+            </div>
+            
+            <h3>Current Pause Times</h3>
+            <div id="pauseTimesManage" class="pause-times-container">
+                <p>Loading pause times...</p>
+            </div>
+        </div>
+    </div>
+
     <!-- EDIT SECTION: Test Queue -->
     <div id="queueTab" class="tab-content">
         <div class="card edit-section">
@@ -408,11 +552,32 @@
         let refreshInterval;
         let currentConfig = {};
         let currentWebhooks = [];
+        let currentPauseTimes = [];
 
         // Initialize
         function init() {
             fetchStatus(); // Initial fetch
+            fetchPauseTimes(); // Initial fetch of pause times
+            updateVietnamTime(); // Initial update of Vietnam time
             refreshInterval = setInterval(fetchStatus, 2000);
+            setInterval(updateVietnamTime, 1000); // Update Vietnam time every second
+            setInterval(fetchPauseTimes, 10000); // Update pause times every 10 seconds
+        }
+        
+        // Update Vietnam time display
+        function updateVietnamTime() {
+            const vietnamTime = new Date().toLocaleString('en-US', {
+                timeZone: 'Asia/Ho_Chi_Minh',
+                hour12: false,
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+                weekday: 'short',
+                year: 'numeric',
+                month: 'short',
+                day: 'numeric'
+            });
+            document.getElementById('vietnamTimeDisplay').textContent = vietnamTime;
         }
         
         // Show notification instead of alert
@@ -489,6 +654,9 @@
                 updateWebhooksManageSection();
             } else if (tabId === 'configTab') {
                 loadConfigValues();
+            } else if (tabId === 'pauseTimesTab') {
+                fetchPauseTimes();
+                cancelEdit(); // Hide edit form if visible
             }
         }
 
@@ -559,6 +727,17 @@
                         // Update timestamp
                         updateTimestamp('lastUpdatedWebhooks');
                     }
+
+                    // Update pause times if available
+                    if (data.pauseTimes) {
+                        currentPauseTimes = data.pauseTimes;
+                        updatePauseTimesDisplay();
+                    }
+                    
+                    // Update pause status if available
+                    if (data.hasOwnProperty('isPaused')) {
+                        updatePauseStatusDisplay(data.isPaused);
+                    }
                     
                     // Update group stats with error handling
                     const statsElem = document.getElementById('groupStats');
@@ -607,6 +786,221 @@
             } else {
                 webhooksElem.innerHTML = '<p>No webhooks configured</p>';
             }
+        }
+
+        // Fetch pause times
+        function fetchPauseTimes() {
+            fetch('/api/pause-times')
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! Status: ${response.status}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    currentPauseTimes = data.pauseTimes;
+                    updatePauseTimesDisplay();
+                    updatePauseStatusDisplay(data.isPaused);
+                    updateTimestamp('lastUpdatedPauseStatus');
+                })
+                .catch(error => {
+                    console.error('Error fetching pause times:', error);
+                    showNotification('Error fetching pause times', 'error');
+                });
+        }
+
+        // Update pause times display
+        function updatePauseTimesDisplay() {
+            const pauseTimesElem = document.getElementById('pauseTimesManage');
+            const currentPauseTimesElem = document.getElementById('currentPauseTimesDisplay');
+            
+            // Update pause times management section
+            pauseTimesElem.innerHTML = '';
+            
+            if (currentPauseTimes && currentPauseTimes.length > 0) {
+                currentPauseTimes.forEach(pauseTime => {
+                    const pauseTimeElem = document.createElement('div');
+                    pauseTimeElem.className = 'pause-time-item';
+                    
+                    pauseTimeElem.innerHTML = `
+                        <div>
+                            <strong>${pauseTime.startTime} - ${pauseTime.endTime}</strong>
+                        </div>
+                        <div class="pause-time-actions">
+                            <button class="edit-btn" onclick="editPauseTime('${pauseTime.id}')">Edit</button>
+                            <button class="remove-btn" onclick="removePauseTime('${pauseTime.id}')">Remove</button>
+                        </div>
+                    `;
+                    
+                    pauseTimesElem.appendChild(pauseTimeElem);
+                });
+            } else {
+                pauseTimesElem.innerHTML = '<p>No pause times configured</p>';
+            }
+            
+            // Update current pause times display in status section
+            currentPauseTimesElem.innerHTML = '';
+            
+            if (currentPauseTimes && currentPauseTimes.length > 0) {
+                const table = document.createElement('table');
+                
+                // Create table header
+                const headerRow = document.createElement('tr');
+                headerRow.innerHTML = `
+                    <th>Start Time</th>
+                    <th>End Time</th>
+                `;
+                table.appendChild(headerRow);
+                
+                // Add rows for each pause time
+                currentPauseTimes.forEach(pauseTime => {
+                    const row = document.createElement('tr');
+                    row.innerHTML = `
+                        <td>${pauseTime.startTime}</td>
+                        <td>${pauseTime.endTime}</td>
+                    `;
+                    table.appendChild(row);
+                });
+                
+                currentPauseTimesElem.appendChild(table);
+            } else {
+                currentPauseTimesElem.innerHTML = '<p>No pause times configured</p>';
+            }
+        }
+
+        // Update pause status display
+        function updatePauseStatusDisplay(isPaused) {
+            const pauseStatusElem = document.getElementById('pauseStatusDisplay');
+            
+            if (isPaused) {
+                pauseStatusElem.innerHTML = `
+                    <div class="pause-status active">
+                        PROCESSING PAUSED - Accepting new queue items, but not processing or sending webhooks
+                    </div>
+                `;
+            } else {
+                pauseStatusElem.innerHTML = `
+                    <div class="pause-status inactive">
+                        PROCESSING ACTIVE - Normal operation
+                    </div>
+                `;
+            }
+        }
+
+        // Edit pause time
+        function editPauseTime(id) {
+            const pauseTime = currentPauseTimes.find(pt => pt.id === id);
+            if (!pauseTime) {
+                showNotification('Pause time not found', 'error');
+                return;
+            }
+            
+            document.getElementById('editPauseTimeId').value = id;
+            document.getElementById('editStartTime').value = pauseTime.startTime;
+            document.getElementById('editEndTime').value = pauseTime.endTime;
+            
+            document.getElementById('editPauseTimeForm').classList.add('show');
+        }
+
+        // Cancel edit
+        function cancelEdit() {
+            document.getElementById('editPauseTimeForm').classList.remove('show');
+        }
+
+        // Save pause time edit
+        function savePauseTimeEdit() {
+            const id = document.getElementById('editPauseTimeId').value;
+            const startTime = document.getElementById('editStartTime').value;
+            const endTime = document.getElementById('editEndTime').value;
+            
+            if (!startTime || !endTime) {
+                showNotification('Both start and end time are required', 'error');
+                return;
+            }
+            
+            fetch('/api/pause-times', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    action: 'edit',
+                    id,
+                    startTime,
+                    endTime
+                })
+            })
+                .then(response => response.json())
+                .then(data => {
+                    showNotification(data.message);
+                    cancelEdit();
+                    fetchPauseTimes();
+                })
+                .catch(error => {
+                    console.error('Error editing pause time:', error);
+                    showNotification('Error editing pause time', 'error');
+                });
+        }
+
+        // Add pause time
+        function addPauseTime() {
+            const startTime = document.getElementById('startTime').value;
+            const endTime = document.getElementById('endTime').value;
+            
+            if (!startTime || !endTime) {
+                showNotification('Both start and end time are required', 'error');
+                return;
+            }
+            
+            fetch('/api/pause-times', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    action: 'add',
+                    startTime,
+                    endTime
+                })
+            })
+                .then(response => response.json())
+                .then(data => {
+                    showNotification(data.message);
+                    document.getElementById('startTime').value = '';
+                    document.getElementById('endTime').value = '';
+                    fetchPauseTimes();
+                })
+                .catch(error => {
+                    console.error('Error adding pause time:', error);
+                    showNotification('Error adding pause time', 'error');
+                });
+        }
+
+        // Remove pause time
+        function removePauseTime(id) {
+            if (!confirm('Are you sure you want to remove this pause time?')) {
+                return;
+            }
+            
+            fetch('/api/pause-times', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    action: 'remove',
+                    id
+                })
+            })
+                .then(response => response.json())
+                .then(data => {
+                    showNotification(data.message);
+                    fetchPauseTimes();
+                })
+                .catch(error => {
+                    console.error('Error removing pause time:', error);
+                    showNotification('Error removing pause time', 'error');
+                });
         }
 
         // Add to queue
