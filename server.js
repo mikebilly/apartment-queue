@@ -524,12 +524,17 @@ server.post('/api/config', async (request, reply) => {
 });
 
 // API to manage pause times
+// API to manage pause times - fixed to return consistent, parsed objects
 server.post('/api/pause-times', async (request, reply) => {
   try {
     const { action, id, startTime, endTime } = request.body;
 
+    console.log(`[PAUSE TIMES] Action: ${action}, ID: ${id}, StartTime: ${startTime}, EndTime: ${endTime}`);
+    server.log.info(`Pause time ${action} request: id=${id}, startTime=${startTime}, endTime=${endTime}`);
+
     // Validate time format for add and edit actions
     if ((action === 'add' || action === 'edit') && (!startTime || !endTime)) {
+      console.log("[PAUSE TIMES] Error: Missing startTime or endTime");
       return reply.code(400).send({ error: 'Both startTime and endTime are required' });
     }
 
@@ -541,6 +546,19 @@ server.post('/api/pause-times', async (request, reply) => {
         endTime
       };
 
+      console.log(`[PAUSE TIMES] Adding new pause time: ${JSON.stringify(pauseTime)}`);
+
+      // Get current pause times for logging
+      const currentPauseTimes = await safeRedisOperation(
+        redisClient.lRange.bind(redisClient),
+        'pause_times',
+        'list',
+        [],
+        0,
+        -1
+      );
+      console.log(`[PAUSE TIMES] Current pause times before add: ${currentPauseTimes.length} items`);
+
       await safeRedisOperation(
         redisClient.rPush.bind(redisClient),
         'pause_times',
@@ -549,11 +567,39 @@ server.post('/api/pause-times', async (request, reply) => {
         JSON.stringify(pauseTime)
       );
 
-      return { success: true, message: 'Pause time added', pauseTime };
+      // Get all pause times after adding
+      const allPauseTimesRaw = await safeRedisOperation(
+        redisClient.lRange.bind(redisClient),
+        'pause_times',
+        'list',
+        [],
+        0,
+        -1
+      );
+
+      // Parse all pause times for response
+      const allPauseTimes = allPauseTimesRaw.map(item => {
+        try {
+          return JSON.parse(item);
+        } catch (err) {
+          console.log(`[PAUSE TIMES] Error parsing item: ${err.message}`);
+          return { error: 'Parse error' };
+        }
+      });
+
+      console.log(`[PAUSE TIMES] Updated pause times after add: ${allPauseTimesRaw.length} items`);
+
+      return {
+        success: true,
+        message: 'Pause time added',
+        pauseTime,
+        pauseTimes: allPauseTimes // Return pre-parsed objects
+      };
     }
     else if (action === 'remove') {
       // Remove a pause time
       if (!id) {
+        console.log("[PAUSE TIMES] Error: Missing ID for remove action");
         return reply.code(400).send({ error: 'ID is required for removing pause time' });
       }
 
@@ -567,11 +613,35 @@ server.post('/api/pause-times', async (request, reply) => {
         -1
       );
 
+      console.log(`[PAUSE TIMES] Removing ID: ${id}`);
+      console.log(`[PAUSE TIMES] Current pause times before remove: ${pauseTimes.length} items`);
+
+      // Log all IDs for debugging
+      pauseTimes.forEach((item, index) => {
+        try {
+          const parsed = JSON.parse(item);
+          console.log(`[PAUSE TIMES] Item ${index}: ID=${parsed.id}`);
+        } catch (err) {
+          console.log(`[PAUSE TIMES] Error parsing item ${index}: ${err.message}`);
+        }
+      });
+
       // Filter out the one to remove
       const filteredPauseTimes = pauseTimes.filter(item => {
-        const parsed = JSON.parse(item);
-        return parsed.id !== id;
+        try {
+          const parsed = JSON.parse(item);
+          const keep = String(parsed.id) !== String(id);
+          if (!keep) {
+            console.log(`[PAUSE TIMES] Found item to remove: ${parsed.id}`);
+          }
+          return keep;
+        } catch (err) {
+          console.log(`[PAUSE TIMES] Error parsing item during remove: ${err.message}`);
+          return true; // Keep items that can't be parsed
+        }
       });
+
+      console.log(`[PAUSE TIMES] Filtered pause times after remove: ${filteredPauseTimes.length} items`);
 
       // Delete and recreate the list
       await redisClient.del('pause_times');
@@ -580,7 +650,33 @@ server.post('/api/pause-times', async (request, reply) => {
         await redisClient.rPush('pause_times', ...filteredPauseTimes);
       }
 
-      return { success: true, message: 'Pause time removed' };
+      // Get all pause times for response
+      const allPauseTimesRaw = await safeRedisOperation(
+        redisClient.lRange.bind(redisClient),
+        'pause_times',
+        'list',
+        [],
+        0,
+        -1
+      );
+
+      // Parse all pause times for response
+      const allPauseTimes = allPauseTimesRaw.map(item => {
+        try {
+          return JSON.parse(item);
+        } catch (err) {
+          console.log(`[PAUSE TIMES] Error parsing item: ${err.message}`);
+          return { error: 'Parse error' };
+        }
+      });
+
+      console.log(`[PAUSE TIMES] Final pause times after remove: ${allPauseTimesRaw.length} items`);
+
+      return {
+        success: true,
+        message: 'Pause time removed',
+        pauseTimes: allPauseTimes // Return pre-parsed objects
+      };
     }
     else if (action === 'edit') {
       // Edit an existing pause time
@@ -588,7 +684,11 @@ server.post('/api/pause-times', async (request, reply) => {
         return reply.code(400).send({ error: 'ID is required for editing pause time' });
       }
 
-      // Get all pause times
+      if (!startTime || !endTime) {
+        return reply.code(400).send({ error: 'Both startTime and endTime are required' });
+      }
+
+      // First find the index of the item by ID
       const pauseTimes = await safeRedisOperation(
         redisClient.lRange.bind(redisClient),
         'pause_times',
@@ -598,32 +698,86 @@ server.post('/api/pause-times', async (request, reply) => {
         -1
       );
 
-      // Update the specified one
-      const updatedPauseTimes = pauseTimes.map(item => {
-        const parsed = JSON.parse(item);
-        if (parsed.id === id) {
-          return JSON.stringify({
-            ...parsed,
-            startTime,
-            endTime
-          });
+      let foundIndex = -1;
+      let foundPauseTime = null;
+
+      // Find the index of the item with the matching ID
+      for (let i = 0; i < pauseTimes.length; i++) {
+        try {
+          const parsed = JSON.parse(pauseTimes[i]);
+          if (String(parsed.id) === String(id)) {
+            foundIndex = i;
+            foundPauseTime = parsed;
+            break;
+          }
+        } catch (err) {
+          console.log(`[PAUSE TIMES] Error parsing item at index ${i}: ${err.message}`);
         }
-        return item;
-      });
-
-      // Delete and recreate the list
-      await redisClient.del('pause_times');
-
-      if (updatedPauseTimes.length > 0) {
-        await redisClient.rPush('pause_times', ...updatedPauseTimes);
       }
 
-      return { success: true, message: 'Pause time updated' };
+      if (foundIndex === -1) {
+        console.log(`[PAUSE TIMES] No pause time found with ID: ${id}`);
+        return reply.code(404).send({ error: 'Pause time not found' });
+      }
+
+      // Update just this one item, keeping its ID
+      const updatedPauseTime = {
+        id: foundPauseTime.id, // Keep the original ID
+        startTime: startTime,
+        endTime: endTime
+      };
+
+      console.log(`[PAUSE TIMES] Found pause time at index ${foundIndex}, updating it`);
+      console.log(`[PAUSE TIMES] Before: ${JSON.stringify(foundPauseTime)}`);
+      console.log(`[PAUSE TIMES] After: ${JSON.stringify(updatedPauseTime)}`);
+
+      // Update only this item in the Redis list using LSET
+      await safeRedisOperation(
+        redisClient.lSet.bind(redisClient),
+        'pause_times',
+        'list',
+        null,
+        foundIndex,
+        JSON.stringify(updatedPauseTime)
+      );
+
+      console.log(`[PAUSE TIMES] Successfully updated pause time at index ${foundIndex}`);
+
+      // Get all pause times for the response
+      const allPauseTimes = await safeRedisOperation(
+        redisClient.lRange.bind(redisClient),
+        'pause_times',
+        'list',
+        [],
+        0,
+        -1
+      );
+
+      // Parse all items for consistency in response
+      const parsedPauseTimes = allPauseTimes.map(item => {
+        try {
+          return JSON.parse(item);
+        } catch (err) {
+          console.log(`[PAUSE TIMES] Error parsing item: ${err.message}`);
+          return { error: 'Parse error' };
+        }
+      });
+
+      console.log(`[PAUSE TIMES] Returning ${parsedPauseTimes.length} pause times in response`);
+
+      return {
+        success: true,
+        message: 'Pause time updated',
+        pauseTimes: parsedPauseTimes // Return all pause times as parsed objects
+      };
     }
     else {
+      console.log(`[PAUSE TIMES] Invalid action: ${action}`);
       return reply.code(400).send({ error: 'Invalid action. Use "add", "remove", or "edit"' });
     }
   } catch (error) {
+    console.log(`[PAUSE TIMES] Error in pause-times endpoint: ${error.message}`);
+    console.log(error.stack);
     server.log.error(`Error in /api/pause-times: ${error.message}`);
     return reply.code(500).send({ error: 'Internal Server Error', message: error.message });
   }
